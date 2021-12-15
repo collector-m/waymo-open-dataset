@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-""" tf.metrics implementation for detection metrics."""
+"""tf.metrics implementation for detection metrics."""
 
 import tensorflow as tf
 
@@ -34,15 +34,22 @@ def _update(name, update, init_shape, dtype):
     v: the variable ref.
     v_assign: tensor that hold the new value of the variable after the update.
   """
-  with tf.variable_scope('detection_metrics', reuse=tf.AUTO_REUSE):
-    v = tf.get_local_variable(
+  with tf.compat.v1.variable_scope(
+      'detection_metrics', reuse=tf.compat.v1.AUTO_REUSE):
+    initializer = lambda: tf.constant([], shape=init_shape, dtype=dtype)
+    v = tf.compat.v1.get_local_variable(
         name,
         dtype=dtype,
+        collections=[
+            tf.compat.v1.GraphKeys.LOCAL_VARIABLES,
+            tf.compat.v1.GraphKeys.METRIC_VARIABLES
+        ],
         # init_shape is required to pass the shape inference check.
-        initializer=tf.constant([], shape=init_shape, dtype=dtype))
-    shape = tf.concat([[-1], tf.shape(update)[1:]], axis=0)
+        initializer=initializer,
+        validate_shape=False)
+    shape = tf.concat([[-1], tf.shape(input=update)[1:]], axis=0)
     v_reshape = tf.reshape(v.value(), shape)
-    v_assign = tf.assign(
+    v_assign = tf.compat.v1.assign(
         v, tf.concat([v_reshape, update], axis=0), validate_shape=False)
   return v, v_assign
 
@@ -76,20 +83,31 @@ def get_detection_metric_ops(
     ground_truth_bbox,
     ground_truth_type,
     ground_truth_difficulty,
+    ground_truth_speed=None,
+    recall_at_precision=None,
+    name_filter=None,
 ):
   """Returns dict of metric name to tuples of `(value_op, update_op)`.
 
   Each update_op accumulates the prediction and ground truth tensors to its
   corresponding tf variables. Each value_op computes detection metrics on all
-  prediction and groud truth seen so far. This works similar as `tf.metrics`
+  prediction and ground truth seen so far. This works similar as `tf.metrics`
   code.
 
   Notation:
     * M: number of predicted boxes.
-    * D: number of box dimensions (4, 5 or 7).
+    * D: number of box dimensions. The number of box dimensions can be one of
+         the following:
+           4: Used for boxes with type TYPE_AA_2D (center_x, center_y, length,
+              width)
+           5: Used for boxes with type TYPE_2D (center_x, center_y, length,
+              width, heading).
+           7: Used for boxes with type TYPE_3D (center_x, center_y, center_z,
+              length, width, height, heading).
     * N: number of ground truth boxes.
 
   Args:
+    config: The metrics config defined in protos/metrics.proto.
     prediction_frame_id: [M] int64 tensor that identifies frame for each
       prediction.
     prediction_bbox: [M, D] tensor encoding the predicted bounding boxes.
@@ -103,10 +121,18 @@ def get_detection_metric_ops(
     ground_truth_type: [N] tensor encoding the object type of each ground truth.
     ground_truth_difficulty: [N] tensor encoding the difficulty level of each
       ground truth.
+    ground_truth_speed: [N, 2] tensor with the vx, vy velocity for each object.
+    recall_at_precision: a float within [0,1]. If set, returns a 3rd metric that
+      reports the recall at the given precision.
+    name_filter: If set, only preserve metrics that contains the given filter.
 
   Returns:
     A dictionary of metric names to tuple of value_op and update_op.
   """
+  if ground_truth_speed is None:
+    num_gt_boxes = tf.shape(ground_truth_bbox)[0]
+    ground_truth_speed = tf.zeros((num_gt_boxes, 2), tf.float32)
+
   eval_dict = {
       'prediction_frame_id': (prediction_frame_id, [0], tf.int64),
       'prediction_bbox':
@@ -119,6 +145,7 @@ def get_detection_metric_ops(
           (ground_truth_bbox, [0, _get_box_dof(config.box_type)], tf.float32),
       'ground_truth_type': (ground_truth_type, [0], tf.uint8),
       'ground_truth_difficulty': (ground_truth_difficulty, [0], tf.uint8),
+      'ground_truth_speed': (ground_truth_speed, [0, 2], tf.float32),
   }
 
   variable_and_update_ops = {}
@@ -133,16 +160,28 @@ def get_detection_metric_ops(
   }
 
   config_str = config.SerializeToString()
-  ap, aph, _, _, _ = py_metrics_ops.detection_metrics(
+  ap, aph, pr, _, _ = py_metrics_ops.detection_metrics(
       config=config_str, **variable_map)
   breakdown_names = config_util.get_breakdown_names_from_config(config)
   metric_ops = {}
+  update_op_added = False
   for i, name in enumerate(breakdown_names):
-    if i == 0:
+    if name_filter is not None and name_filter not in name:
+      continue
+    if not update_op_added:
       metric_ops['{}/AP'.format(name)] = (ap[i], update_op)
+      update_op_added = True
     else:
       # Set update_op to be an no-op just in case if anyone runs update_ops in
       # multiple session.run()s.
       metric_ops['{}/AP'.format(name)] = (ap[i], tf.constant([]))
     metric_ops['{}/APH'.format(name)] = (aph[i], tf.constant([]))
+    if recall_at_precision is not None:
+      precision_i_mask = pr[i, :, 0] > recall_at_precision
+      recall_i = tf.reduce_max(
+          tf.where(precision_i_mask, pr[i, :, 1], tf.zeros_like(pr[i, :, 1])))
+      metric_ops['{}/Recall@{}'.format(name,
+                                       recall_at_precision)] = (recall_i,
+                                                                tf.constant([]))
+
   return metric_ops

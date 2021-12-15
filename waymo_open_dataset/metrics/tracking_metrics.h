@@ -20,7 +20,6 @@ limitations under the License.
 
 #include "waymo_open_dataset/label.pb.h"
 #include "waymo_open_dataset/protos/metrics.pb.h"
-#include "waymo_open_dataset/metrics/tracking_metrics.h"
 
 namespace waymo {
 namespace open_dataset {
@@ -72,6 +71,16 @@ std::vector<TrackingMetrics> ComputeTrackingMetrics(
 // Requires: 'pds', 'gts' have the same dim-0, dim-1 size. dim-0: scene. dim-1:
 // frame. dim-1 is ordered by frame timestamp in ascending order.
 std::vector<TrackingMetrics> ComputeTrackingMetrics(
+    const Config& config,
+    const std::vector<std::vector<std::vector<Object>>>& pds,
+    const std::vector<std::vector<std::vector<Object>>>& gts);
+
+// Estimates the score cutoffs that evenly sample the P/R curve.
+// pds: the predicted objects.
+// gts: the ground truths.
+// Returns a Config that has Config::scores populated.
+// Requires: config.scores is not populated.
+Config EstimateScoreCutoffs(
     const Config& config,
     const std::vector<std::vector<std::vector<Object>>>& pds,
     const std::vector<std::vector<std::vector<Object>>>& gts);

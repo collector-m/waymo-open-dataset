@@ -60,13 +60,13 @@ class DetectionMetricsEstimatorTest(tf.test.TestCase):
 
   def _BuildGraph(self, graph):
     with graph.as_default():
-      self._pd_frame_id = tf.placeholder(dtype=tf.int64)
-      self._pd_bbox = tf.placeholder(dtype=tf.float32)
-      self._pd_type = tf.placeholder(dtype=tf.uint8)
-      self._pd_score = tf.placeholder(dtype=tf.float32)
-      self._gt_frame_id = tf.placeholder(dtype=tf.int64)
-      self._gt_bbox = tf.placeholder(dtype=tf.float32)
-      self._gt_type = tf.placeholder(dtype=tf.uint8)
+      self._pd_frame_id = tf.compat.v1.placeholder(dtype=tf.int64)
+      self._pd_bbox = tf.compat.v1.placeholder(dtype=tf.float32)
+      self._pd_type = tf.compat.v1.placeholder(dtype=tf.uint8)
+      self._pd_score = tf.compat.v1.placeholder(dtype=tf.float32)
+      self._gt_frame_id = tf.compat.v1.placeholder(dtype=tf.int64)
+      self._gt_bbox = tf.compat.v1.placeholder(dtype=tf.float32)
+      self._gt_type = tf.compat.v1.placeholder(dtype=tf.uint8)
 
       metrics = detection_metrics.get_detection_metric_ops(
           config=self._BuildConfig(),
@@ -80,7 +80,9 @@ class DetectionMetricsEstimatorTest(tf.test.TestCase):
           ground_truth_type=self._gt_type,
           ground_truth_frame_id=self._gt_frame_id,
           ground_truth_difficulty=tf.ones_like(
-              self._gt_frame_id, dtype=tf.uint8))
+              self._gt_frame_id, dtype=tf.uint8),
+          recall_at_precision=0.95,
+      )
       return metrics
 
   def _EvalUpdateOps(
@@ -119,48 +121,49 @@ class DetectionMetricsEstimatorTest(tf.test.TestCase):
     graph = tf.Graph()
     metrics = self._BuildGraph(graph)
     with self.test_session(graph=graph) as sess:
-      sess.run(tf.initializers.local_variables())
+      sess.run(tf.compat.v1.initializers.local_variables())
       self._EvalUpdateOps(sess, graph, metrics, pd_frameid, pd_bbox, pd_type,
                           pd_score, gt_frameid, gt_bbox, gt_type)
       self._EvalUpdateOps(sess, graph, metrics, pd_frameid, pd_bbox, pd_type,
                           pd_score, gt_frameid, gt_bbox, gt_type)
-      with tf.variable_scope('detection_metrics', reuse=True):
+      with tf.compat.v1.variable_scope('detection_metrics', reuse=True):
         # Looking up an exisitng var to check that data is accumulated properly
         # in the variable.
-        pd_frame_id_accumulated_var = tf.get_variable(
+        pd_frame_id_accumulated_var = tf.compat.v1.get_variable(
             'prediction_frame_id', dtype=tf.int64)
       pd_frame_id_accumulated = sess.run([pd_frame_id_accumulated_var])
       self.assertEqual(len(pd_frame_id_accumulated[0]), m * 2)
 
       aps = self._EvalValueOps(sess, graph, metrics)
-      self.assertEqual(len(aps), 8)
-      for i in range(0, 8):
+      self.assertEqual(len(aps), 12)
+      for i in range(0, 12):
         self.assertTrue(-ERROR <= list(aps.values())[i][0] and
                         list(aps.values())[i][0] <= 1.0 + ERROR)
 
     with self.test_session(graph=graph) as sess:
-      sess.run(tf.initializers.local_variables())
+      sess.run(tf.compat.v1.initializers.local_variables())
       self._EvalUpdateOps(sess, graph, metrics, pd_frameid, pd_bbox, pd_type,
                           np.ones_like(pd_frameid), pd_frameid, pd_bbox,
                           pd_type)
       self._EvalUpdateOps(sess, graph, metrics, pd_frameid, pd_bbox, pd_type,
                           np.ones_like(pd_frameid), pd_frameid, pd_bbox,
                           pd_type)
-      with tf.variable_scope('detection_metrics', reuse=True):
+      with tf.compat.v1.variable_scope('detection_metrics', reuse=True):
         # Looking up an exisitng var to check that data is accumulated properly
         # in the variable.
-        pd_frame_id_accumulated_var = tf.get_variable(
+        pd_frame_id_accumulated_var = tf.compat.v1.get_variable(
             'prediction_frame_id', dtype=tf.int64)
       pd_frame_id_accumulated = sess.run([pd_frame_id_accumulated_var])
       self.assertEqual(len(pd_frame_id_accumulated[0]), m * 2)
 
       aps = self._EvalValueOps(sess, graph, metrics)
-      self.assertEqual(len(aps), 8)
-      for i in range(0, 8):
+      self.assertEqual(len(aps), 12)
+      for i in range(0, 12):
         # Note: 'm' (num_boxes) needs to be large enough such that we have boxes
         # generated for every object type.
         self.assertAlmostEqual(list(aps.values())[i][0], 1.0, places=5)
 
 
 if __name__ == '__main__':
+  tf.compat.v1.disable_eager_execution()
   tf.test.main()

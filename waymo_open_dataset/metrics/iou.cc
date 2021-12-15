@@ -66,10 +66,11 @@ AABox2d<double> ToAABox2d(const Label::Box& box) {
   return AABox2d<double>(box.center_x(), box.center_y(), box.length() * 0.5,
                          box.width() * 0.5);
 }
+}  // namespace
 
-// Converts a box proto to a polygon.
 Polygon2d ToPolygon2d(const Label::Box& box) { return Polygon2d(ToBox2d(box)); }
 
+namespace {
 double ComputeIoU2d(const Label::Box& b1, const Label::Box& b2) {
   if (b1.length() <= kMinBoxDim || b1.width() <= kMinBoxDim ||
       b2.length() <= kMinBoxDim || b2.width() <= kMinBoxDim) {
@@ -172,13 +173,6 @@ ABSL_CONST_INIT const int kMaxIoU = 1000 * 1000;
 
 double ComputeIoU(const Label::Box& b1, const Label::Box& b2,
                   Label::Box::Type box_type) {
-  CHECK_GE(b1.length(), 0.0);
-  CHECK_GE(b1.width(), 0.0);
-  CHECK_GE(b1.height(), 0.0);
-  CHECK_GE(b2.length(), 0.0);
-  CHECK_GE(b2.width(), 0.0);
-  CHECK_GE(b2.height(), 0.0);
-
   if (b1.length() >= kMaxBoxDim || b1.width() >= kMaxBoxDim ||
       b1.height() >= kMaxBoxDim || b2.length() >= kMaxBoxDim ||
       b2.width() >= kMaxBoxDim || b2.height() >= kMaxBoxDim) {

@@ -22,10 +22,10 @@
 set -e -x
 
 # Override the following env variables if necessary.
-export GITHUB_BRANCH="${GITHUB_BRANCH:-master}"
 export PYTHON_VERSION="${PYTHON_VERSION:-3}"
 export PYTHON_MINOR_VERSION="${PYTHON_MINOR_VERSION}"
 export PIP_MANYLINUX2010="${PIP_MANYLINUX2010:-0}"
+export TF_VERSION="${TF_VERSION:-2.5.0}"
 
 if [[ -z "${PYTHON_MINOR_VERSION}" ]]; then
   PYTHON="python${PYTHON_VERSION}"
@@ -34,29 +34,24 @@ else
 fi
 
 curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
-$PYTHON get-pip.py
+$PYTHON get-pip.py --user
 
 PIP="$PYTHON -m pip"
 
-${PIP} install --upgrade setuptools
-${PIP} install tensorflow==1.14.0
-
-rm -rf waymo-od || true
-git clone https://github.com/waymo-research/waymo-open-dataset.git waymo-od
-cd waymo-od
-
-git checkout remotes/origin/${GITHUB_BRANCH}
+${PIP} install --upgrade setuptools --user
+${PIP} install --upgrade tensorflow=="${TF_VERSION}" --user
 
 ./configure.sh
 
 bazel clean
 bazel build ...
-bazel test ...
+bazel test ... --test_output=all
 
-DST_DIR="/tmp/pip_pkg_build"
+DST_DIR="/tmp/artifacts"
 rm -rf "$DST_DIR" || true
 ./pip_pkg_scripts/build_pip_pkg.sh "$DST_DIR" ${PYTHON_VERSION}
 # Comment the following line if you run this outside of the container.
 if [[ "${PIP_MANYLINUX2010}" == "1" ]]; then
   find "$DST_DIR" -name *.whl | xargs ./third_party/auditwheel.sh repair --plat manylinux2010_x86_64 -w "$DST_DIR"
 fi
+

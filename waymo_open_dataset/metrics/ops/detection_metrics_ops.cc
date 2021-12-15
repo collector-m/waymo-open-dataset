@@ -27,11 +27,12 @@ limitations under the License.
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/threadpool.h"
+#include "tensorflow/core/platform/cpu_info.h"
 #include "waymo_open_dataset/label.pb.h"
-#include "waymo_open_dataset/protos/breakdown.pb.h"
 #include "waymo_open_dataset/metrics/detection_metrics.h"
-#include "waymo_open_dataset/protos/metrics.pb.h"
 #include "waymo_open_dataset/metrics/ops/utils.h"
+#include "waymo_open_dataset/protos/breakdown.pb.h"
+#include "waymo_open_dataset/protos/metrics.pb.h"
 
 namespace tensorflow {
 namespace {
@@ -72,6 +73,8 @@ class DetectionMetricsOp final : public OpKernel {
         ctx, ctx->input("ground_truth_frame_id", &input.ground_truth_frame_id));
     OP_REQUIRES_OK(ctx, ctx->input("ground_truth_difficulty",
                                    &input.ground_truth_difficulty));
+    OP_REQUIRES_OK(ctx, ctx->input("ground_truth_speed",
+                                   &input.ground_truth_speed));
     OutputTensors output = ComputeImpl(input, ctx);
     ctx->set_output(0, output.average_precision);
     ctx->set_output(1, output.average_precision_ha_weighted);
@@ -93,6 +96,7 @@ class DetectionMetricsOp final : public OpKernel {
     const Tensor* ground_truth_type = nullptr;
     const Tensor* ground_truth_frame_id = nullptr;
     const Tensor* ground_truth_difficulty = nullptr;
+    const Tensor* ground_truth_speed = nullptr;
   };
 
   // Wrapper of all outputs.
@@ -152,16 +156,25 @@ class DetectionMetricsOp final : public OpKernel {
   OutputTensors ComputeImpl(const InputTensors& input, OpKernelContext* ctx) {
     LOG(INFO) << "Computing detection metrics for "
               << input.prediction_bbox->dim_size(0) << " predicted boxes.";
-    absl::flat_hash_map<int64, std::vector<co::Object>> pds_map =
-        co::ParseObjectFromTensors(
+    LOG(INFO) << "Parsing prediction "
+              << input.prediction_bbox->shape().DebugString()
+              << input.prediction_frame_id->shape();
+    absl::flat_hash_map<waymo::open_dataset::int64, std::vector<co::Object>>
+        pds_map = co::ParseObjectFromTensors(
             *input.prediction_bbox, *input.prediction_type,
             *input.prediction_frame_id, *input.prediction_score,
-            *input.prediction_overlap_nlz, absl::nullopt, absl::nullopt);
-    absl::flat_hash_map<int64, std::vector<co::Object>> gts_map =
-        co::ParseObjectFromTensors(
+            *input.prediction_overlap_nlz, absl::nullopt, absl::nullopt,
+            absl::nullopt);
+    LOG(INFO) << "Parsing ground truth "
+              << input.ground_truth_bbox->shape().DebugString()
+              << input.ground_truth_frame_id->shape();
+
+    absl::flat_hash_map<waymo::open_dataset::int64, std::vector<co::Object>>
+        gts_map = co::ParseObjectFromTensors(
             *input.ground_truth_bbox, *input.ground_truth_type,
             *input.ground_truth_frame_id, absl::nullopt, absl::nullopt,
-            *input.ground_truth_difficulty, absl::nullopt);
+            *input.ground_truth_difficulty, absl::nullopt,
+            *input.ground_truth_speed);
     std::set<int64> frame_ids;
     for (const auto& kv : pds_map) {
       frame_ids.insert(kv.first);
@@ -176,7 +189,13 @@ class DetectionMetricsOp final : public OpKernel {
       gts.push_back(std::move(gts_map[id]));
     }
 
-    static constexpr int kNumThreads = 10;
+    // Ensure there is at least a single frame to run with or else the output
+    // tensors will be empty.
+    if (pds.empty() && gts.empty()) {
+      pds.push_back({});
+      gts.push_back({});
+    }
+
     std::vector<std::vector<co::DetectionMeasurements>> measurements(
         pds.size());
     co::Config config = config_;
@@ -187,7 +206,7 @@ class DetectionMetricsOp final : public OpKernel {
     {
       tensorflow::thread::ThreadPool pool(
           ctx->env(), tensorflow::ThreadOptions(),
-          "ComputeDetectionMetricsPool", kNumThreads,
+          "ComputeDetectionMetricsPool", port::MaxParallelism(),
           /*low_latency_hint=*/false);
       for (int i = 0, sz = pds.size(); i < sz; ++i) {
         pool.Schedule([&config, &pds, &gts, &measurements, i]() {

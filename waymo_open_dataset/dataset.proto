@@ -98,7 +98,7 @@ message CameraCalibration {
   // https://en.wikipedia.org/wiki/Distortion_(optics)
   // https://docs.opencv.org/2.4/doc/tutorials/calib3d/camera_calibration/camera_calibration.html
   repeated double intrinsic = 2;
-  // Vehicle frame to camera frame.
+  // Camera frame to vehicle frame.
   optional Transform extrinsic = 3;
   // Camera image size.
   optional int32 width = 4;
@@ -126,6 +126,7 @@ message LaserCalibration {
   optional double beam_inclination_max = 4;
   // Lidar frame to vehicle frame.
   optional Transform extrinsic = 5;
+
 }
 
 message Context {
@@ -216,6 +217,28 @@ message RangeImage {
   // in the counter clockwise direction.
   optional bytes range_image_pose_compressed = 4;
 
+  // Zlib compressed [H, W, 5] serialized version of MatrixFloat.
+  // To decompress:
+  // string val = ZlibDecompress(range_image_flow_compressed);
+  // MatrixFloat range_image_flow;
+  // range_image_flow.ParseFromString(val);
+  // Inner dimensions are [vx, vy, vz, pointwise class].
+  //
+  // If the point is not annotated with scene flow information, class is set
+  // to -1. A point is not annotated if it is in a no-label zone or if its label
+  // bounding box does not have a corresponding match in the previous frame,
+  // making it infeasible to estimate the motion of the point.
+  // Otherwise, (vx, vy, vz) are velocity along (x, y, z)-axis for this point
+  // and class is set to one of the following values:
+  //  -1: no-flow-label, the point has no flow information.
+  //   0:  unlabeled or "background,", i.e., the point is not contained in a
+  //       bounding box.
+  //   1: vehicle, i.e., the point corresponds to a vehicle label box.
+  //   2: pedestrian, i.e., the point corresponds to a pedestrian label box.
+  //   3: sign, i.e., the point corresponds to a sign label box.
+  //   4: cyclist, i.e., the point corresponds to a cyclist label box.
+  optional bytes range_image_flow_compressed = 5;
+
   // Deprecated, do not use.
   optional MatrixFloat range_image = 1 [deprecated = true];
 }
@@ -228,10 +251,12 @@ message CameraImage {
   // SDC pose.
   optional Transform pose = 3;
   // SDC velocity at 'pose_timestamp' below. The velocity value is represented
-  // at vehicle frame.
+  // at *global* frame.
   // With this velocity, the pose can be extrapolated.
   // r(t+dt) = r(t) + dr/dt * dt where dr/dt = v_{x,y,z}.
-  // R(t+dt) = R(t) + R(t)*SkewSymmetric(w_{x,y,z})*dt
+  // dR(t)/dt = W*R(t) where W = SkewSymmetric(w_{x,y,z})
+  // This differential equation solves to: R(t) = exp(Wt)*R(0) if W is constant.
+  // When dt is small: R(t+dt) = (I+W*dt)R(t)
   // r(t) = (x(t), y(t), z(t)) is vehicle location at t in the global frame.
   // R(t) = Rotation Matrix (3x3) from the body frame to the global frame at t.
   // SkewSymmetric(x,y,z) is defined as the cross-product matrix in the
@@ -242,10 +267,22 @@ message CameraImage {
   optional double pose_timestamp = 5;
 
   // Rolling shutter params.
-
-  // Shutter duration in seconds. Time taken for one shutter.
+  // The following explanation assumes left->right rolling shutter.
+  //
+  // Rolling shutter cameras expose and read the image column by column, offset
+  // by the read out time for each column. The desired timestamp for each column
+  // is the middle of the exposure of that column as outlined below for an image
+  // with 3 columns:
+  // ------time------>
+  // |---- exposure col 1----| read |
+  // -------|---- exposure col 2----| read |
+  // --------------|---- exposure col 3----| read |
+  // ^trigger time                                ^readout end time
+  //             ^time for row 1 (= middle of exposure of row 1)
+  //                    ^time image center (= middle of exposure of middle row)
+  // Shutter duration in seconds. Exposure time per column.
   optional double shutter = 6;
-  // Time when the sensor was triggered and when readout finished.
+  // Time when the sensor was triggered and when last readout finished.
   // The difference between trigger time and readout done time includes
   // the exposure time and the actual sensor readout time.
   optional double camera_trigger_time = 7;
@@ -268,6 +305,11 @@ message Laser {
 }
 
 message Frame {
+  // The following field numbers are reserved for third-party extensions. Users
+  // may declare new fields in that range in their own .proto files without
+  // having to edit the original file.
+  extensions 1000 to max;
+
   // This context is the same for all frames belong to the same driving run
   // segment. Use context.name to identify frames belong to the same driving
   // segment. We do not store all frames from one driving segment in one proto
